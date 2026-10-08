@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Fault settings{% endblock %}
+{% block content %}
+<h1>Fault settings</h1>
+<p>These make the shop slower or less reliable on purpose. They reset to the environment's defaults when the app restarts.</p>
+<form method="post" action="/admin/faults" class="narrow-form">
+  <div class="field">
+    <label for="latency_ms">Extra latency per request (ms)</label>
+    <input id="latency_ms" name="latency_ms" type="number" min="0" step="1" value="{{ faults.latency_ms }}">
+  </div>
+  <div class="field">
+    <label for="flaky_rate">Checkout failure rate (0 to 1)</label>
+    <p class="hint" id="flaky-hint">Share of checkout submissions that fail with "service unavailable".</p>
+    <input id="flaky_rate" name="flaky_rate" type="number" min="0" max="1" step="0.05" value="{{ faults.flaky_rate }}" aria-describedby="flaky-hint">
+  </div>
+  <div class="field">
+    <label for="bug">Bug flag</label>
+    <input id="bug" name="bug" type="text" value="{{ faults.bug }}">
+  </div>
+  <button type="submit">Save fault settings</button>
+</form>
+
+<section aria-labelledby="reset-heading">
+  <h2 id="reset-heading">Reset data</h2>
+  <p>Deletes every order and restores the original products, stock, coupons and accounts.</p>
+  <form method="post" action="/admin/reset">
+    <button type="submit" class="danger">Reset all data</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Your cart{% endblock %}
+{% block content %}
+<h1>Your cart</h1>
+{% if not totals.lines %}
+<p>Your cart is empty. <a href="/">Continue shopping</a></p>
+{% else %}
+<table class="cart-table">
+  <caption>Items in your cart</caption>
+  <thead>
+    <tr><th scope="col">Product</th><th scope="col">Price</th><th scope="col">Quantity</th><th scope="col">Total</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr>
+  </thead>
+  <tbody>
+    {% for line in totals.lines %}
+    <tr>
+      <th scope="row"><a href="/products/{{ line.product.id }}">{{ line.product.name }}</a></th>
+      <td>{{ line.product.price_cents|money }}</td>
+      <td>
+        <form method="post" action="/cart/update" class="inline-form">
+          <input type="hidden" name="product_id" value="{{ line.product.id }}">
+          <label for="qty-{{ line.product.id }}" class="visually-hidden">Quantity of {{ line.product.name }}</label>
+          <input id="qty-{{ line.product.id }}" name="quantity" type="number" min="0" max="{{ max_qty }}" value="{{ line.qty }}">
+          <button type="submit" aria-label="Update quantity of {{ line.product.name }}">Update</button>
+        </form>
+      </td>
+      <td>{{ line.total_cents|money }}</td>
+      <td>
+        <form method="post" action="/cart/remove">
+          <input type="hidden" name="product_id" value="{{ line.product.id }}">
+          <button type="submit" class="link-button" aria-label="Remove {{ line.product.name }} from cart">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<section aria-labelledby="coupon-heading" class="coupon">
+  <h2 id="coupon-heading">Coupon</h2>
+  {% if totals.coupon %}
+  <p>Coupon <strong>{{ totals.coupon.code }}</strong> is applied.</p>
+  <form method="post" action="/cart/coupon/remove">
+    <button type="submit" class="link-button">Remove coupon</button>
+  </form>
+  {% else %}
+  {% if totals.coupon_error %}
+  <p class="flash flash-error" role="alert">{{ totals.coupon_error }} It won't be applied.</p>
+  {% endif %}
+  <form method="post" action="/cart/coupon" class="inline-form">
+    <label for="coupon-code">Coupon code</label>
+    <input id="coupon-code" name="code" type="text" autocomplete="off">
+    <button type="submit">Apply coupon</button>
+  </form>
+  {% endif %}
+</section>
+
+<section aria-labelledby="summary-heading" class="summary">
+  <h2 id="summary-heading">Order summary</h2>
+  <dl>
+    <dt>Subtotal</dt><dd>{{ totals.subtotal_cents|money }}</dd>
+    {% if totals.discount_cents %}<dt>Discount ({{ totals.coupon.code }})</dt><dd>−{{ totals.discount_cents|money }}</dd>{% endif %}
+    <dt>Total</dt><dd class="total">{{ totals.total_cents|money }}</dd>
+  </dl>
+  <a class="button" href="/checkout">Proceed to checkout</a>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Checkout{% endblock %}
+{% macro field(name, label, type="text", autocomplete=None, hint=None, multiline=False) %}
+<div class="field">
+  <label for="{{ name }}">{{ label }}</label>
+  {% if hint %}<p class="hint" id="{{ name }}-hint">{{ hint }}</p>{% endif %}
+  {% set described = [name ~ "-hint" if hint, name ~ "-error" if errors.get(name)]|select|join(" ") %}
+  {% if multiline %}
+  <textarea id="{{ name }}" name="{{ name }}" rows="3" required {% if autocomplete %}autocomplete="{{ autocomplete }}"{% endif %} {% if described %}aria-describedby="{{ described }}"{% endif %} {% if errors.get(name) %}aria-invalid="true"{% endif %}>{{ form[name] }}</textarea>
+  {% else %}
+  <input id="{{ name }}" name="{{ name }}" type="{{ type }}" value="{{ form[name] }}" required {% if autocomplete %}autocomplete="{{ autocomplete }}"{% endif %} {% if described %}aria-describedby="{{ described }}"{% endif %} {% if errors.get(name) %}aria-invalid="true"{% endif %}>
+  {% endif %}
+  {% if errors.get(name) %}<p class="error" id="{{ name }}-error">{{ errors[name] }}</p>{% endif %}
+</div>
+{% endmacro %}
+{% block content %}
+<h1>Checkout</h1>
+{% if errors %}
+<div class="flash flash-error" role="alert">
+  <p>Please fix the following:</p>
+  <ul>{% for name, message in errors.items() %}<li><a href="#{{ name }}">{{ message }}</a></li>{% endfor %}</ul>
+</div>
+{% endif %}
+{% if payment_error %}<div class="flash flash-error" role="alert">{{ payment_error }}</div>{% endif %}
+
+<div class="checkout">
+  <form method="post" action="/checkout" novalidate>
+    <input type="hidden" name="token" value="{{ token }}">
+    <fieldset>
+      <legend>Delivery</legend>
+      {{ field("name", "Full name", autocomplete="name") }}
+      {{ field("address", "Address", autocomplete="street-address", multiline=True) }}
+    </fieldset>
+    <fieldset>
+      <legend>Payment</legend>
+      {{ field("card_number", "Card number", autocomplete="cc-number", hint="Test cards: 4242 4242 4242 4242 (approved), 4000 0000 0000 0002 (declined), 4000 0000 0000 0119 (temporary failure).") }}
+      {{ field("expiry", "Expiry date", autocomplete="cc-exp", hint="MM/YY") }}
+      {{ field("cvc", "Security code", autocomplete="cc-csc") }}
+    </fieldset>
+    <button type="submit">Place order · {{ totals.total_cents|money }}</button>
+  </form>
+
+  <section aria-labelledby="summary-heading" class="summary">
+    <h2 id="summary-heading">Order summary</h2>
+    <ul class="summary-lines">
+      {% for line in totals.lines %}
+      <li>{{ line.qty }} × {{ line.product.name }} <span>{{ line.total_cents|money }}</span></li>
+      {% endfor %}
+    </ul>
+    <dl>
+      <dt>Subtotal</dt><dd>{{ totals.subtotal_cents|money }}</dd>
+      {% if totals.discount_cents %}<dt>Discount ({{ totals.coupon.code }})</dt><dd>−{{ totals.discount_cents|money }}</dd>{% endif %}
+      <dt>Total</dt><dd class="total">{{ totals.total_cents|money }}</dd>
+    </dl>
+    <p><a href="/cart">Edit cart</a></p>
+  </section>
+</div>
+{% endblock %}
