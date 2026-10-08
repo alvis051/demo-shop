@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ product.name }}{% endblock %}
+{% block content %}
+<nav aria-label="Breadcrumb">
+  <ol class="breadcrumb">
+    <li><a href="/">Shop</a></li>
+    <li><a href="/?category={{ product.category|urlencode }}">{{ product.category }}</a></li>
+    <li><a href="/products/{{ product.id }}" aria-current="page">{{ product.name }}</a></li>
+  </ol>
+</nav>
+<article class="product-detail">
+  <h1>{{ product.name }}</h1>
+  <p class="price">{{ product.price_cents|money }}</p>
+  <p>{{ product.description }}</p>
+  <dl class="facts">
+    <dt>SKU</dt><dd>{{ product.sku }}</dd>
+    <dt>Availability</dt>
+    <dd>{% if product.stock == 0 %}Out of stock{% elif product.stock <= 5 %}Only {{ product.stock }} left{% else %}In stock{% endif %}</dd>
+  </dl>
+  {% if in_cart %}<p>You have {{ in_cart }} in your cart.</p>{% endif %}
+  <form method="post" action="/cart/add" class="add-form">
+    <input type="hidden" name="product_id" value="{{ product.id }}">
+    <div class="field">
+      <label for="quantity">Quantity</label>
+      <input id="quantity" name="quantity" type="number" min="1" max="{{ [product.stock, 99]|min if product.stock else 1 }}" value="1" {% if product.stock == 0 %}disabled{% endif %}>
+    </div>
+    <button type="submit" {% if product.stock == 0 %}disabled{% endif %}>Add to cart</button>
+  </form>
+</article>
+{% endblock %}

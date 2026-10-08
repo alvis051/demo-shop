@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{% endblock %} · Demo Shop</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="site-header">
+    {% if settings.env != "prod" %}
+    <p class="env-banner">{{ settings.env }} environment</p>
+    {% endif %}
+    <div class="header-inner">
+      <a class="brand" href="/">Demo Shop</a>
+      <nav aria-label="Main">
+        <ul>
+          <li><a href="/" {% if request.url.path == "/" %}aria-current="page"{% endif %}>Shop</a></li>
+          <li><a href="/cart" {% if request.url.path == "/cart" %}aria-current="page"{% endif %}>Cart{% if cart_count %} <span class="badge">({{ cart_count }} {{ "item" if cart_count == 1 else "items" }})</span>{% endif %}</a></li>
+          {% if user %}
+          <li><a href="/orders" {% if request.url.path.startswith("/orders") %}aria-current="page"{% endif %}>Orders</a></li>
+          {% if user.is_admin and settings.env != "prod" %}
+          <li><a href="/admin/faults" {% if request.url.path.startswith("/admin") %}aria-current="page"{% endif %}>Admin</a></li>
+          {% endif %}
+          {% endif %}
+        </ul>
+      </nav>
+      <div class="account">
+        {% if user %}
+        <span>Signed in as {{ user.name }}</span>
+        <form method="post" action="/logout">
+          <button type="submit" class="link-button">Sign out</button>
+        </form>
+        {% else %}
+        <a href="/login">Sign in</a>
+        {% endif %}
+      </div>
+    </div>
+  </header>
+  <main id="main" tabindex="-1">
+    {% for level, message in flashes %}
+    <div class="flash flash-{{ level }}" role="{{ 'alert' if level == 'error' else 'status' }}">{{ message }}</div>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer">
+    <p>Demo Shop is a sample store. No real payments are taken.</p>
+  </footer>
+</body>
+</html>

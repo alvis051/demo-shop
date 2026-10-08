@@ -1,0 +1,10 @@
+.git
+.github
+.venv
+.env
+**/__pycache__
+.ruff_cache
+node_modules
+playwright-report
+test-results
+tests

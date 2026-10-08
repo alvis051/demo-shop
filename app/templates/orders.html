@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Your orders{% endblock %}
+{% block content %}
+<h1>Your orders</h1>
+{% if orders %}
+<table>
+  <caption>Orders you've placed, newest first</caption>
+  <thead>
+    <tr><th scope="col">Order</th><th scope="col">Date</th><th scope="col">Items</th><th scope="col">Total</th><th scope="col">Status</th></tr>
+  </thead>
+  <tbody>
+    {% for order in orders %}
+    <tr>
+      <th scope="row"><a href="/orders/{{ order.id }}">Order #{{ order.id }}</a></th>
+      <td><time datetime="{{ order.created_at.isoformat() }}">{{ order.created_at.strftime("%-d %b %Y, %H:%M UTC") }}</time></td>
+      <td>{{ order.item_count }}</td>
+      <td>{{ order.total_cents|money }}</td>
+      <td>{{ order.status|capitalize }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>You haven't placed any orders yet. <a href="/">Start shopping</a></p>
+{% endif %}
+{% endblock %}

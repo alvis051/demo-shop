@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Order #{{ order.id }}{% endblock %}
+{% block content %}
+<h1>Order #{{ order.id }}</h1>
+<dl class="facts">
+  <dt>Placed</dt><dd><time datetime="{{ order.created_at.isoformat() }}">{{ order.created_at.strftime("%-d %b %Y, %H:%M UTC") }}</time></dd>
+  <dt>Status</dt><dd>{{ order.status|capitalize }}</dd>
+  <dt>Deliver to</dt><dd>{{ order.ship_name }}<br>{{ order.ship_address }}</dd>
+  <dt>Paid with</dt><dd>Card ending {{ order.card_last4 }}</dd>
+</dl>
+<table>
+  <caption>Items in this order</caption>
+  <thead>
+    <tr><th scope="col">Product</th><th scope="col">Price</th><th scope="col">Quantity</th><th scope="col">Total</th></tr>
+  </thead>
+  <tbody>
+    {% for line in order.lines %}
+    <tr>
+      <th scope="row">{{ line.name }}</th>
+      <td>{{ line.unit_price_cents|money }}</td>
+      <td>{{ line.quantity }}</td>
+      <td>{{ line.total_cents|money }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<dl class="summary">
+  <dt>Subtotal</dt><dd>{{ order.subtotal_cents|money }}</dd>
+  {% if order.discount_cents %}<dt>Discount ({{ order.coupon_code }})</dt><dd>−{{ order.discount_cents|money }}</dd>{% endif %}
+  <dt>Total</dt><dd class="total">{{ order.total_cents|money }}</dd>
+</dl>
+<p><a href="/orders">Back to your orders</a></p>
+{% endblock %}

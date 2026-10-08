@@ -1,0 +1,88 @@
+# Render Blueprint: one project, three environments, one image-backed web service each.
+#
+# The image is built once by GitHub Actions and pushed to GHCR. Each environment
+# pulls its own moving tag (:daily, :pre, :prod); .github/workflows/deploy.yml
+# points that tag at a tested digest and then calls the service's deploy hook.
+#
+# Before applying, create a registry credential named "ghcr" in Render
+# (a GitHub token with read:packages), and have the Neon connection strings ready.
+projects:
+  - name: demo-shop
+    environments:
+      - name: daily
+        services:
+          - type: web
+            name: demo-shop-daily
+            runtime: image
+            image:
+              url: ghcr.io/alvis051/demo-shop:daily
+              creds:
+                fromRegistryCreds:
+                  name: ghcr
+            plan: starter
+            region: oregon
+            preDeployCommand: alembic upgrade head && python -m app.seed
+            healthCheckPath: /healthz
+            envVars:
+              - key: DEMO_SHOP_ENV
+                value: daily
+              - key: DATABASE_URL # Neon branch "daily"
+                sync: false
+              - key: SESSION_SECRET
+                generateValue: true
+              - key: ADMIN_EMAIL
+                sync: false
+              - key: ADMIN_PASSWORD
+                sync: false
+
+      - name: pre
+        services:
+          - type: web
+            name: demo-shop-pre
+            runtime: image
+            image:
+              url: ghcr.io/alvis051/demo-shop:pre
+              creds:
+                fromRegistryCreds:
+                  name: ghcr
+            plan: starter
+            region: oregon
+            preDeployCommand: alembic upgrade head && python -m app.seed
+            healthCheckPath: /healthz
+            envVars:
+              - key: DEMO_SHOP_ENV
+                value: pre
+              - key: DATABASE_URL # Neon branch "pre"
+                sync: false
+              - key: SESSION_SECRET
+                generateValue: true
+              - key: ADMIN_EMAIL
+                sync: false
+              - key: ADMIN_PASSWORD
+                sync: false
+
+      - name: prod
+        services:
+          - type: web
+            name: demo-shop-prod
+            runtime: image
+            image:
+              url: ghcr.io/alvis051/demo-shop:prod
+              creds:
+                fromRegistryCreds:
+                  name: ghcr
+            plan: starter
+            region: oregon
+            preDeployCommand: alembic upgrade head && python -m app.seed
+            healthCheckPath: /healthz
+            envVars:
+              - key: DEMO_SHOP_ENV
+                value: prod
+              - key: DATABASE_URL # Neon branch "prod" (the main branch)
+                sync: false
+              - key: SESSION_SECRET
+                generateValue: true
+              - key: ADMIN_EMAIL
+                sync: false
+              - key: ADMIN_PASSWORD
+                sync: false
