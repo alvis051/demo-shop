@@ -36,7 +36,7 @@ jobs:
         run: uv run ruff check . && uv run ruff format --check .
       - name: Migrations go up, down and up, and match the models
         env:
-          DEMO_SHOP_ENV: daily
+          DEMO_SHOP_ENV: staging
           SESSION_SECRET: ci-only
         run: |
           uv run alembic upgrade head

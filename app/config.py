@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-Env = Literal["test", "daily", "pre", "prod"]
+Env = Literal["test", "staging", "prod"]
 
 
 class Settings(BaseSettings):

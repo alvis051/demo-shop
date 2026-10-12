@@ -58,20 +58,31 @@ data.
 
 ## Environments
 
-| | daily | pre | prod |
-|---|---|---|---|
-| Deployed | every green CI run on `main` | `Deploy` workflow, `target=pre` | `Deploy` workflow, `target=prod`, after approval |
-| Image | that commit's | a chosen `main` commit's | exactly what's on pre |
-| Database | Neon branch `daily` | Neon branch `pre` | Neon branch `prod` (main) |
-| Demo accounts and fault knobs | yes | yes | no |
+| | staging | prod |
+|---|---|---|
+| Deployed | every green CI run on `main` | the same run, once a `prod` reviewer approves |
+| Image | that commit's | the exact digest staging verified |
+| Rollout | replaces the running revision | blue-green (below) |
+| Database | Neon branch `staging` | Neon's default branch |
+| Demo accounts and fault knobs | yes | no |
 
 - **Hosting:** each environment is a Cloud Run service (`demo-shop-<env>`) on Google
   Cloud, scaling to zero, with at most one instance. Everything on Google Cloud is
   defined in Terraform under `infra/`. The database stays on Neon: Cloud SQL has no
   free tier, and Neon gives each environment its own branch.
 - **Releases:** CI builds the image once per commit and pushes it to Artifact
-  Registry. `.github/workflows/deploy.yml` points the environment's tag at that
-  image's digest, runs the migration job, then rolls the service to the same digest.
+  Registry. `.github/workflows/deploy.yml` deploys that digest to staging, checks
+  `/health`, then waits for approval to promote the same digest to prod. The
+  `:staging` and `:prod` tags mark what each environment has verified.
+- **Blue-green on prod:** the new revision (green) starts with no traffic, tagged
+  `candidate`, so it gets its own URL. It's smoke-tested there against prod's
+  database, and only then takes all the traffic. If the smoke test fails, no user
+  ever reached it.
+- **Rollback:** the previous revision (blue) keeps running with no traffic. Each
+  prod deploy's summary prints the `gcloud run services update-traffic` command
+  that moves traffic back to it. To redeploy an older commit through the whole
+  pipeline, run `Deploy` by hand with its SHA; this only works if no migration has
+  landed since, otherwise roll forward.
 - **Migrations:** the Cloud Run job `demo-shop-migrate-<env>` runs
   `alembic upgrade head && python -m app.seed` before traffic moves.
 - **Secrets:** `DATABASE_URL`, `SESSION_SECRET` and `ADMIN_PASSWORD` come from
@@ -92,8 +103,8 @@ Neon region (the default, `us-west1`, is next to Neon's `aws-us-west-2`).
 export PROJECT=<project-id> REGION=us-west1
 ```
 
-1. Neon: create a project, and branches `daily`, `pre` and `ci` from the
-   default branch. The default branch is prod.
+1. Neon: create a project, and branches `staging` and `ci` from the default
+   branch. The default branch is prod.
 2. Google Cloud: create the project, link billing, and set a budget alert.
 
    ```sh
@@ -117,11 +128,11 @@ export PROJECT=<project-id> REGION=us-west1
      -target=google_secret_manager_secret.app
    ```
 
-4. Secret values, for each environment (`daily`, `pre`, `prod`). `DATABASE_URL` is
+4. Secret values, for each environment (`staging`, `prod`). `DATABASE_URL` is
    the connection string of that environment's Neon branch.
 
    ```sh
-   env=daily
+   env=staging
    printf %s '<neon connection string>' | gcloud secrets versions add demo-shop-$env-database-url --project=$PROJECT --data-file=-
    openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add demo-shop-$env-session-secret --project=$PROJECT --data-file=-
    printf %s '<admin password>' | gcloud secrets versions add demo-shop-$env-admin-password --project=$PROJECT --data-file=-
@@ -133,16 +144,17 @@ export PROJECT=<project-id> REGION=us-west1
    terraform apply -var project_id=$PROJECT -var region=$REGION
    ```
 
-6. GitHub: create environments `daily`, `pre` and `prod`, and give `prod` required
+6. GitHub: create environments `staging` and `prod`, and give `prod` required
    reviewers. Then set the repository variables that `terraform output
    github_variables` prints (`GCP_PROJECT`, `GCP_REGION`, `GCP_WIF_PROVIDER`) with
    `gh variable set`. Until they're set, CI builds the image without pushing it and
    `Deploy` is skipped.
-7. Merge to `main`. CI pushes the first image and `Deploy` ships it to daily. Run
-   `Deploy` with `target=pre`, then `target=prod`.
+7. Merge to `main`. CI pushes the first image, and `Deploy` ships it to staging and
+   then waits for your approval to ship it to prod.
 
 A changed secret takes effect on the next deploy: Cloud Run reads `latest` when it
-creates a revision.
+creates a revision. The same goes for a Terraform change to prod's service: it
+creates a revision with no traffic, and the next deploy carries it live.
 
 ## No hand-written tests
 

@@ -1,5 +1,5 @@
 variable "project_id" {
-  description = "Google Cloud project that hosts all three environments."
+  description = "Google Cloud project that hosts both environments."
   type        = string
 }
 
