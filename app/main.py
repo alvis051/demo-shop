@@ -52,7 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.middleware("http")
     async def latency_and_headers(request: Request, call_next):
         faults: Faults = request.app.state.faults
-        if faults.allowed and faults.latency_ms and request.url.path != "/healthz":
+        if faults.allowed and faults.latency_ms and request.url.path != "/health":
             await asyncio.sleep(faults.latency_ms / 1000)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -86,8 +86,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         detail = "Some of what you sent wasn't valid. Go back, check the form and try again."
         return render(request, "error.html", 400, title="Bad request", detail=detail)
 
-    @app.get("/healthz", include_in_schema=False)
-    def healthz(request: Request):
+    # Not /healthz: Cloud Run reserves some paths ending in "z".
+    @app.get("/health", include_in_schema=False)
+    def health(request: Request):
         with request.app.state.db.engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return PlainTextResponse(f"ok {settings.version}")

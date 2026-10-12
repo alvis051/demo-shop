@@ -5,8 +5,10 @@ name: Deploy
 # prod:  run it with target=prod. It ships the exact image that is on pre, after the
 #        "prod" GitHub Environment's required reviewers approve.
 #
-# Each environment's tag (:daily, :pre, :prod) is moved to the chosen digest, then the
-# Render deploy hook redeploys the service, whose preDeployCommand runs migrations.
+# Each deploy moves the environment's tag (:daily, :pre, :prod) to the chosen digest,
+# runs the migration job on that image, then rolls the Cloud Run service to it.
+# Google Cloud access is through Workload Identity Federation: each environment has its
+# own deployer, which only a job in that GitHub Environment can use (see infra/).
 
 on:
   workflow_run:
@@ -26,28 +28,38 @@ on:
 
 permissions:
   contents: read
-  packages: write
+  id-token: write
 
 env:
-  IMAGE: ghcr.io/alvis051/demo-shop
+  IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT }}/demo-shop/demo-shop
+  REGION: ${{ vars.GCP_REGION }}
 
 jobs:
   deploy:
+    # Skipped until infra/ is applied and the repository variables are set.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+      vars.GCP_PROJECT != '' && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'daily' }}
     concurrency: deploy-${{ github.event_name == 'workflow_dispatch' && inputs.target || 'daily' }}
     env:
       TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'daily' }}
     steps:
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: deploy-${{ env.TARGET }}@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+          token_format: access_token
+      - uses: google-github-actions/setup-gcloud@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
 
       - name: Pick the image
         id: pick
@@ -74,28 +86,30 @@ jobs:
       - name: Point the environment's tag at it
         run: docker buildx imagetools create --tag "$IMAGE:$TARGET" "$IMAGE@${{ steps.pick.outputs.digest }}"
 
-      - name: Trigger the Render deploy
-        env:
-          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+      # Migrations run before traffic moves, so they must stay compatible with the
+      # version still serving (expand/contract).
+      - name: Migrate and seed
         run: |
-          if [ -z "$RENDER_DEPLOY_HOOK" ]; then
-            echo "::warning::RENDER_DEPLOY_HOOK is not set for $TARGET; tag moved but nothing was deployed."
-            exit 0
-          fi
-          curl -fsS -X POST "$RENDER_DEPLOY_HOOK" > /dev/null
+          gcloud run jobs update "demo-shop-migrate-$TARGET" --region "$REGION" \
+            --image "$IMAGE@${{ steps.pick.outputs.digest }}"
+          gcloud run jobs execute "demo-shop-migrate-$TARGET" --region "$REGION" --wait
 
-      - name: Wait for the new version to serve
-        if: vars.APP_URL != ''
-        env:
-          APP_URL: ${{ vars.APP_URL }}
+      - name: Roll the service
         run: |
+          gcloud run services update "demo-shop-$TARGET" --region "$REGION" \
+            --image "$IMAGE@${{ steps.pick.outputs.digest }}"
+
+      - name: Check the new version is serving
+        run: |
+          url=$(gcloud run services describe "demo-shop-$TARGET" --region "$REGION" --format 'value(status.url)')
           want=$(docker buildx imagetools inspect "$IMAGE@${{ steps.pick.outputs.digest }}" \
             --format '{{json .Image}}' | jq -r '.config.Env[] | select(startswith("APP_VERSION=")) | sub("APP_VERSION="; "")')
-          for i in $(seq 60); do
-            got=$(curl -fsS "$APP_URL/healthz" || true)
-            echo "healthz: $got"
-            [ "$got" = "ok $want" ] && exit 0
-            sleep 10
+          # The first request may wait on a cold start and on Neon waking up.
+          for i in $(seq 12); do
+            got=$(curl -fsS --max-time 30 "$url/health" || true)
+            echo "health: $got"
+            [ "$got" = "ok $want" ] && echo "$TARGET is serving $want at $url" && exit 0
+            sleep 5
           done
-          echo "::error::$TARGET did not start serving $want within 10 minutes"
+          echo "::error::$TARGET is not serving $want at $url"
           exit 1

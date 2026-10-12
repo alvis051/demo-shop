@@ -1,6 +1,6 @@
 """Run the shop: `python -m app [--host H] [--port N]`.
 
-Port 0 (the default outside Render) picks a free port and prints it, so a test
+Port 0 (the default when PORT is unset; Cloud Run sets it) picks a free port and prints it, so a test
 harness can start several copies side by side.
 """
 

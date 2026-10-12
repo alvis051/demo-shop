@@ -65,32 +65,84 @@ data.
 | Database | Neon branch `daily` | Neon branch `pre` | Neon branch `prod` (main) |
 | Demo accounts and fault knobs | yes | yes | no |
 
-- **Hosting:** each environment is a Render web service defined in `render.yaml`.
-  It pulls `ghcr.io/alvis051/demo-shop:<env>`.
-- **Releases:** CI builds the image once per commit. `.github/workflows/deploy.yml`
-  points the environment's tag at that image and calls the service's Render
-  deploy hook.
-- **Migrations:** Render runs `alembic upgrade head && python -m app.seed` before
-  switching traffic.
-- **Version check:** `/healthz` returns `ok <git sha>`.
+- **Hosting:** each environment is a Cloud Run service (`demo-shop-<env>`) on Google
+  Cloud, scaling to zero, with at most one instance. Everything on Google Cloud is
+  defined in Terraform under `infra/`. The database stays on Neon: Cloud SQL has no
+  free tier, and Neon gives each environment its own branch.
+- **Releases:** CI builds the image once per commit and pushes it to Artifact
+  Registry. `.github/workflows/deploy.yml` points the environment's tag at that
+  image's digest, runs the migration job, then rolls the service to the same digest.
+- **Migrations:** the Cloud Run job `demo-shop-migrate-<env>` runs
+  `alembic upgrade head && python -m app.seed` before traffic moves.
+- **Secrets:** `DATABASE_URL`, `SESSION_SECRET` and `ADMIN_PASSWORD` come from
+  Secret Manager (`demo-shop-<env>-<name>`). Their values never pass through
+  Terraform or GitHub.
+- **Access:** GitHub Actions signs in through Workload Identity Federation, with no
+  stored keys. Only `main` can push images, and each environment's deployer can only
+  be used from the matching GitHub Environment.
+- **Version check:** `/health` returns `ok <git sha>`. (Not `/healthz`: Cloud Run
+  reserves some paths ending in `z`.)
 
 ### One-time setup
 
+You need `gcloud`, `terraform` and `gh`. Pick a project ID and a region near your
+Neon region (the default, `us-west1`, is next to Neon's `aws-us-west-2`).
+
+```sh
+export PROJECT=<project-id> REGION=us-west1
+```
+
 1. Neon: create a project, and branches `daily`, `pre` and `ci` from the
    default branch. The default branch is prod.
-2. Merge to `main` so CI pushes the first image and the `Deploy` workflow tags it
-   `:daily`. Run `Deploy` with `target=pre` and then `target=prod` once, so all
-   three tags exist. Until step 5 is done, these runs move the tags and skip the
-   Render deploy.
-3. Render: add a registry credential named `ghcr` (a GitHub token with
-   `read:packages`), then create a Blueprint from this repo. When asked, enter
-   each environment's `DATABASE_URL` (its Neon branch), `ADMIN_EMAIL` and
-   `ADMIN_PASSWORD`.
-4. GitHub: create environments `daily`, `pre` and `prod`. Give `prod` required
-   reviewers.
-5. In each GitHub environment, add the secret `RENDER_DEPLOY_HOOK` (from the
-   service's settings in Render). Optionally add the variable `APP_URL`, so the
-   deploy waits until the new version is serving.
+2. Google Cloud: create the project, link billing, and set a budget alert.
+
+   ```sh
+   gcloud projects create $PROJECT
+   gcloud billing projects link $PROJECT --billing-account=<billing-account-id>
+   gcloud billing budgets create --billing-account=<billing-account-id> \
+     --display-name=demo-shop --budget-amount=5USD \
+     --threshold-rule=percent=0.5 --threshold-rule=percent=1.0
+   gcloud storage buckets create gs://$PROJECT-tfstate --project=$PROJECT \
+     --location=$REGION --uniform-bucket-level-access
+   gcloud storage buckets update gs://$PROJECT-tfstate --versioning
+   ```
+
+3. Terraform, part one: the APIs and the empty secrets. The services can't start
+   until the secrets have values.
+
+   ```sh
+   cd infra
+   terraform init -backend-config="bucket=$PROJECT-tfstate"
+   terraform apply -var project_id=$PROJECT -var region=$REGION \
+     -target=google_secret_manager_secret.app
+   ```
+
+4. Secret values, for each environment (`daily`, `pre`, `prod`). `DATABASE_URL` is
+   the connection string of that environment's Neon branch.
+
+   ```sh
+   env=daily
+   printf %s '<neon connection string>' | gcloud secrets versions add demo-shop-$env-database-url --project=$PROJECT --data-file=-
+   openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add demo-shop-$env-session-secret --project=$PROJECT --data-file=-
+   printf %s '<admin password>' | gcloud secrets versions add demo-shop-$env-admin-password --project=$PROJECT --data-file=-
+   ```
+
+5. Terraform, part two: everything else.
+
+   ```sh
+   terraform apply -var project_id=$PROJECT -var region=$REGION
+   ```
+
+6. GitHub: create environments `daily`, `pre` and `prod`, and give `prod` required
+   reviewers. Then set the repository variables that `terraform output
+   github_variables` prints (`GCP_PROJECT`, `GCP_REGION`, `GCP_WIF_PROVIDER`) with
+   `gh variable set`. Until they're set, CI builds the image without pushing it and
+   `Deploy` is skipped.
+7. Merge to `main`. CI pushes the first image and `Deploy` ships it to daily. Run
+   `Deploy` with `target=pre`, then `target=prod`.
+
+A changed secret takes effect on the next deploy: Cloud Run reads `latest` when it
+creates a revision.
 
 ## No hand-written tests
 
