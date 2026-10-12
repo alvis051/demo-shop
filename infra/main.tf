@@ -1,9 +1,9 @@
-# demo-shop on Google Cloud: three Cloud Run services (daily, pre, prod), each with a
+# demo-shop on Google Cloud: two Cloud Run services (staging, prod), each with a
 # migration job, runtime secrets and its own deployer identity for GitHub Actions.
 # The database is Neon (one branch per environment), outside Google Cloud.
 #
-# Terraform owns the shape of each service. The Deploy workflow only changes the image,
-# so Terraform ignores image changes.
+# Terraform owns the shape of each service. The Deploy workflow changes the image and,
+# on prod, which revision gets the traffic, so Terraform ignores both.
 
 terraform {
   required_version = ">= 1.9"
@@ -25,9 +25,9 @@ provider "google" {
 }
 
 locals {
-  envs  = toset(["daily", "pre", "prod"])
+  envs  = toset(["staging", "prod"])
   image = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.images.repository_id}/demo-shop"
-  # Env var -> secret name. Each environment gets its own copy, e.g. demo-shop-pre-database-url.
+  # Env var -> secret name. Each environment gets its own copy, e.g. demo-shop-staging-database-url.
   secret_env = { DATABASE_URL = "database-url", SESSION_SECRET = "session-secret", ADMIN_PASSWORD = "admin-password" }
   env_secrets = { for pair in setproduct(local.envs, values(local.secret_env)) : "${pair[0]}-${pair[1]}" => {
     env  = pair[0]
@@ -65,7 +65,7 @@ resource "google_artifact_registry_repository" "images" {
     action = "KEEP"
     condition {
       tag_state    = "TAGGED"
-      tag_prefixes = ["daily", "pre", "prod"]
+      tag_prefixes = ["staging", "prod"]
     }
   }
   cleanup_policies {
@@ -140,7 +140,7 @@ resource "google_service_account_iam_member" "deployer_github" {
   member             = "${local.github_subject}:environment:${each.key}"
 }
 
-# Moves the environment's tag (and reads :pre when promoting to prod).
+# Moves the environment's tag.
 resource "google_artifact_registry_repository_iam_member" "deployer" {
   for_each   = local.envs
   repository = google_artifact_registry_repository.images.name
@@ -246,7 +246,7 @@ resource "google_cloud_run_v2_service" "app" {
   }
 
   lifecycle {
-    ignore_changes = [template[0].containers[0].image, client, client_version]
+    ignore_changes = [template[0].containers[0].image, traffic, client, client_version]
   }
   depends_on = [google_secret_manager_secret_iam_member.runtime]
 }

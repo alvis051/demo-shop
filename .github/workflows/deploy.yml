@@ -1,12 +1,17 @@
 name: Deploy
 
-# daily: every green CI run on main.
-# pre:   run this workflow by hand with target=pre (optionally a commit SHA; default: latest main).
-# prod:  run it with target=prod. It ships the exact image that is on pre, after the
-#        "prod" GitHub Environment's required reviewers approve.
+# Every green CI run on main goes through the pipeline:
 #
-# Each deploy moves the environment's tag (:daily, :pre, :prod) to the chosen digest,
-# runs the migration job on that image, then rolls the Cloud Run service to it.
+#   staging  rolls straight to the new image (continuous deployment).
+#   prod     waits for the "prod" GitHub Environment's required reviewers, then ships the
+#            exact image staging verified, blue-green: the new revision starts with no
+#            traffic, is smoke-tested at its own URL against prod's database, and only then
+#            takes all the traffic. If the smoke test fails, no user ever reached it.
+#
+# Run this workflow by hand to send an older commit through the same pipeline (rollback
+# by redeploy). That only works if no migration has landed since; otherwise roll forward.
+#
+# Each environment's tag (:staging, :prod) marks the digest it has verified.
 # Google Cloud access is through Workload Identity Federation: each environment has its
 # own deployer, which only a job in that GitHub Environment can use (see infra/).
 
@@ -17,13 +22,8 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      target:
-        description: Environment to deploy
-        type: choice
-        options: [pre, prod]
-        required: true
       sha:
-        description: "pre only: commit to deploy (default: latest main)"
+        description: "Full commit SHA to deploy (default: latest main)"
         required: false
 
 permissions:
@@ -35,23 +35,26 @@ env:
   REGION: ${{ vars.GCP_REGION }}
 
 jobs:
-  deploy:
+  staging:
     # Skipped until infra/ is applied and the repository variables are set.
     if: >-
       vars.GCP_PROJECT != '' && (
         github.event_name == 'workflow_dispatch' ||
         (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
     runs-on: ubuntu-latest
-    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'daily' }}
-    concurrency: deploy-${{ github.event_name == 'workflow_dispatch' && inputs.target || 'daily' }}
+    environment: staging
+    concurrency: deploy-staging
     env:
-      TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'daily' }}
+      SHA: ${{ inputs.sha || github.event.workflow_run.head_sha || github.sha }}
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+      digest: ${{ steps.pick.outputs.digest }}
     steps:
       - id: auth
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: deploy-${{ env.TARGET }}@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+          service_account: deploy-staging@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
           token_format: access_token
       - uses: google-github-actions/setup-gcloud@v3
       - uses: docker/setup-buildx-action@v3
@@ -63,53 +66,109 @@ jobs:
 
       - name: Pick the image
         id: pick
-        env:
-          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
-          INPUT_SHA: ${{ inputs.sha }}
-          GH_TOKEN: ${{ github.token }}
         run: |
-          case "$TARGET" in
-            daily) source="$IMAGE:sha-$RUN_SHA" ;;
-            pre)
-              sha="$INPUT_SHA"
-              if [ -z "$sha" ]; then
-                sha=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
-                  "https://api.github.com/repos/${{ github.repository }}/commits/main" | jq -r .sha)
-              fi
-              source="$IMAGE:sha-$sha" ;;
-            prod) source="$IMAGE:pre" ;;
-          esac
-          digest=$(docker buildx imagetools inspect "$source" --format '{{json .Manifest}}' | jq -r .digest)
-          echo "Deploying $source ($digest) to $TARGET"
+          digest=$(docker buildx imagetools inspect "$IMAGE:sha-$SHA" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "Deploying $IMAGE:sha-$SHA ($digest)"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-
-      - name: Point the environment's tag at it
-        run: docker buildx imagetools create --tag "$IMAGE:$TARGET" "$IMAGE@${{ steps.pick.outputs.digest }}"
 
       # Migrations run before traffic moves, so they must stay compatible with the
       # version still serving (expand/contract).
       - name: Migrate and seed
         run: |
-          gcloud run jobs update "demo-shop-migrate-$TARGET" --region "$REGION" \
+          gcloud run jobs update demo-shop-migrate-staging --region "$REGION" \
             --image "$IMAGE@${{ steps.pick.outputs.digest }}"
-          gcloud run jobs execute "demo-shop-migrate-$TARGET" --region "$REGION" --wait
+          gcloud run jobs execute demo-shop-migrate-staging --region "$REGION" --wait
 
       - name: Roll the service
         run: |
-          gcloud run services update "demo-shop-$TARGET" --region "$REGION" \
+          gcloud run services update demo-shop-staging --region "$REGION" \
             --image "$IMAGE@${{ steps.pick.outputs.digest }}"
 
       - name: Check the new version is serving
         run: |
-          url=$(gcloud run services describe "demo-shop-$TARGET" --region "$REGION" --format 'value(status.url)')
-          want=$(docker buildx imagetools inspect "$IMAGE@${{ steps.pick.outputs.digest }}" \
-            --format '{{json .Image}}' | jq -r '.config.Env[] | select(startswith("APP_VERSION=")) | sub("APP_VERSION="; "")')
+          url=$(gcloud run services describe demo-shop-staging --region "$REGION" --format 'value(status.url)')
           # The first request may wait on a cold start and on Neon waking up.
           for i in $(seq 12); do
             got=$(curl -fsS --max-time 30 "$url/health" || true)
             echo "health: $got"
-            [ "$got" = "ok $want" ] && echo "$TARGET is serving $want at $url" && exit 0
+            [ "$got" = "ok $SHA" ] && echo "staging is serving $SHA at $url" && exit 0
             sleep 5
           done
-          echo "::error::$TARGET is not serving $want at $url"
+          echo "::error::staging is not serving $SHA at $url"
           exit 1
+
+      - name: Mark the image as verified on staging
+        run: docker buildx imagetools create --tag "$IMAGE:staging" "$IMAGE@${{ steps.pick.outputs.digest }}"
+
+  prod:
+    needs: staging
+    runs-on: ubuntu-latest
+    environment: prod
+    concurrency: deploy-prod
+    env:
+      SHA: ${{ needs.staging.outputs.sha }}
+      DIGEST: ${{ needs.staging.outputs.digest }}
+    steps:
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: deploy-prod@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+          token_format: access_token
+      - uses: google-github-actions/setup-gcloud@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.GCP_REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Migrate and seed
+        run: |
+          gcloud run jobs update demo-shop-migrate-prod --region "$REGION" --image "$IMAGE@$DIGEST"
+          gcloud run jobs execute demo-shop-migrate-prod --region "$REGION" --wait
+
+      # Blue is the revision serving now, green the new one. Green gets the "candidate"
+      # tag, which gives it its own URL, and no traffic.
+      - name: Start the new revision with no traffic
+        id: green
+        run: |
+          blue=$(gcloud run services describe demo-shop-prod --region "$REGION" --format json \
+            | jq -r '.status.traffic[] | select(.percent == 100) | .revisionName')
+          echo "blue=$blue" >> "$GITHUB_OUTPUT"
+          gcloud run services update demo-shop-prod --region "$REGION" \
+            --image "$IMAGE@$DIGEST" --no-traffic --tag candidate
+
+      - name: Smoke-test it on prod's database
+        run: |
+          url=$(gcloud run services describe demo-shop-prod --region "$REGION" --format json \
+            | jq -r '.status.traffic[] | select(.tag == "candidate") | .url')
+          ok=
+          for i in $(seq 12); do
+            got=$(curl -fsS --max-time 30 "$url/health" || true)
+            echo "health: $got"
+            [ "$got" = "ok $SHA" ] && ok=1 && break
+            sleep 5
+          done
+          [ -n "$ok" ] || { echo "::error::the new revision is not serving $SHA at $url"; exit 1; }
+          for path in / /login; do
+            curl -fsS --max-time 30 -o /dev/null "$url$path" && echo "GET $path ok"
+          done
+
+      - name: Switch all traffic to it
+        run: gcloud run services update-traffic demo-shop-prod --region "$REGION" --to-tags candidate=100
+
+      - name: Mark the image as live on prod
+        run: docker buildx imagetools create --tag "$IMAGE:prod" "$IMAGE@$DIGEST"
+
+      - name: Write the rollback command
+        env:
+          BLUE: ${{ steps.green.outputs.blue }}
+        run: |
+          {
+            echo "prod is serving \`$SHA\`. The previous revision, \`$BLUE\`, is still there. To roll back:"
+            echo '```sh'
+            echo "gcloud run services update-traffic demo-shop-prod --region $REGION --to-revisions $BLUE=100"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
